@@ -1,0 +1,5 @@
+export const env = {
+  LIVES_TABLE: process.env.LIVES_TABLE!,
+  LIVES_IMAGES_BUCKET: process.env.LIVES_IMAGES_BUCKET!,
+  IMAGE_PROCESSING_QUEUE_URL: process.env.IMAGE_PROCESSING_QUEUE_URL!,
+};

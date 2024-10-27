@@ -1,0 +1,111 @@
+service: live052
+
+provider:
+  profile: pessoal
+  name: aws
+  runtime: nodejs20.x
+  architecture: arm64
+  environment:
+    LIVES_TABLE: !Ref LivesTable
+    LIVES_IMAGES_BUCKET: !Ref LivesImagesBucket
+    IMAGE_PROCESSING_QUEUE_URL: !Ref ImageProcessingQueue
+  iam:
+    role:
+      statements:
+        - Effect: Allow
+          Action:
+            - dynamodb:PutItem
+            - dynamodb:UpdateItem
+          Resource: !GetAtt LivesTable.Arn
+        - Effect: Allow
+          Action:
+            - s3:PutObject
+            - s3:GetObject
+          Resource: !Join ["/", [!GetAtt LivesImagesBucket.Arn, "*"]]
+        - Effect: Allow
+          Action:
+            - sqs:SendMessage
+          Resource: !GetAtt ImageProcessingQueue.Arn
+
+package:
+  individually: true
+
+build:
+  esbuild:
+    bundle: true
+    minify: true
+    sourcemap: false
+    exclude:
+      - "@aws-sdk/*"
+      - "sharp"
+    external:
+      - "sharp"
+
+layers:
+  Sharp:
+    name: sharp-layer
+    description: sharp package and its binaries.
+    path: layers/sharp
+    retain: false
+    compatibleArchitectures:
+      - arm64
+    compatibleRuntimes:
+      - nodejs20.x
+
+functions:
+  createLive:
+    handler: src/functions/http/createLive.handler
+    events:
+      - httpApi:
+          path: /lives
+          method: POST
+  newS3ObjectTrigger:
+    handler: src/functions/triggers/newS3ObjectTrigger.handler
+    events:
+      - s3:
+          bucket: !Ref LivesImagesBucket
+          event: s3:ObjectCreated:*
+          existing: true
+          forceDeploy: true
+          rules:
+            - prefix: uploads/
+  processImage:
+    handler: src/functions/queues/processImage.handler
+    timeout: 20
+    layers:
+      - !Ref SharpLambdaLayer
+    events:
+      - sqs:
+          arn: !GetAtt ImageProcessingQueue.Arn
+          batchSize: 10
+
+resources:
+  Resources:
+    LivesTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: LivesTable
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: id
+            AttributeType: S
+        KeySchema:
+          - AttributeName: id
+            KeyType: HASH
+    LivesImagesBucket:
+      Type: AWS::S3::Bucket
+      Properties:
+        BucketName: lives-images-bucket
+    ImageProcessingQueue:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: ImageProcessingQueue
+        VisibilityTimeout: 20
+        RedrivePolicy:
+          maxReceiveCount: 2
+          deadLetterTargetArn: !GetAtt ImageProcessingDLQ.Arn
+    ImageProcessingDLQ:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: ImageProcessingDLQ
+        MessageRetentionPeriod: 1209600 # 14 Days
